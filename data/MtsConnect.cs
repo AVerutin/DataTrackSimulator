@@ -69,7 +69,7 @@ namespace SignalGenerator.Data
         private void SubscriptionOnError(object sender, SubscriptionErrorEventArgs e)
         {
             // Вызов функции обратного вызова и попытка переподключения при возникновении ошибки от сигнала
-            logger.Error($"Ошибка при получении сигнала от датчика: {e.Message}");
+            logger.Error($"Ошибка подключения: {e.Message}");
             Connected = false;
             TryReconnect();
         }

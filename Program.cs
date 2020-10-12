@@ -1,6 +1,9 @@
 ﻿using System;
+using Newtonsoft.Json;
 using Microsoft.Extensions.Configuration;
 using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
 using MtsConnect;
 using NLog;
 using SignalGenerator.Data;
@@ -10,10 +13,19 @@ namespace SignalGenerator
     class Program
     {
         private static IConfigurationRoot _config;
-        private static Data.MtsConnect _mtsConnection;
+        private static SubscriptionConfig _cfg;
+        private static Task<MtsTcpConnection> _connection;
+        private static Subscription _subscription;
+        private static bool _connected;
+        private static string _mtsIp;
+        private static int _mtsPort;
+        private static int _mtsTimeout;
+        private static int _mtsReconnect;
+        private static IngotsState _ingots;
+        
         private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
         private static List<MtsSignal> _signalsList;
-
+        
         static void Main(string[] args)
         {
             ConnectToMts();
@@ -28,22 +40,22 @@ namespace SignalGenerator
         /// Подключение к службе MTS Service
         /// </summary>
         /// <returns>Результат подключения к службе MTS Service</returns>
-        private async static void ConnectToMts()
+        private static void ConnectToMts()
         {
             List<ushort> signals = AddMtsSignals();
             
             _config = new ConfigurationBuilder()
                 .AddJsonFile("appsettings.json")
                 .Build();
-            string mtsIp = _config.GetSection("Mts:Ip").Value;
-            int mtsPort = Int32.Parse(_config.GetSection("Mts:Port").Value);
-            int mtsTimeout = Int32.Parse(_config.GetSection("Mts:Timeout").Value);
-            int mtsReconnect = Int32.Parse(_config.GetSection("Mts:ReconnectTimeout").Value);
+            _mtsIp = _config.GetSection("Mts:Ip").Value;
+            _mtsPort = Int32.Parse(_config.GetSection("Mts:Port").Value);
+            _mtsTimeout = Int32.Parse(_config.GetSection("Mts:Timeout").Value);
+            _mtsReconnect = Int32.Parse(_config.GetSection("Mts:ReconnectTimeout").Value);
 
-            _mtsConnection = new Data.MtsConnect("Signal-Generator", mtsIp, mtsPort, mtsTimeout, mtsReconnect);
-            _mtsConnection.Connect();
+            TryConnect();
             
-            await _mtsConnection.Subscribe(signals, NewData);
+            _subscription.AddSignals(signals).Wait();
+            // _subscription.RemoveSignals(signals).Wait();
         }
 
         /// <summary>
@@ -90,6 +102,8 @@ namespace SignalGenerator
             _signalsList.Add(new MtsSignal(4032, "Выгрузка материала из силоса 6", 0));
             _signalsList.Add(new MtsSignal(4033, "Выгрузка материала из силоса 7", 0));
             _signalsList.Add(new MtsSignal(4034, "Выгрузка материала из силоса 8", 0));
+            _signalsList.Add(new MtsSignal(25101, "Скорость рольганга №1", 1));
+            _signalsList.Add(new MtsSignal(4303, "Скорость рольганга №1", 0));
 
             foreach (MtsSignal item in _signalsList)
             {
@@ -98,12 +112,127 @@ namespace SignalGenerator
 
             return res;
         }
+        
+        /// <summary>
+        /// Обработка разрыва соединения со службой MTS Service
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private static void OnError(object sender, SubscriptionErrorEventArgs e)
+        {
+            // Вызов функции обратного вызова и попытка переподключения при возникновении ошибки от сигнала
+            Logger.Error($"Ошибка подключения: {e.Message}");
+            TryReconnect();
+        }
+        
+        /// <summary>
+        /// Попытка переподключения к службе MTS Service
+        /// </summary>
+        private static void TryReconnect()
+        {
+            // Попытка переподключения если прошло указанное в настройках время
+            Task.Delay(TimeSpan.FromMilliseconds(_mtsReconnect));
 
-        private static void NewData(SubscriptionStateEventArgs e)
+            // Сбрасываем предыдущую неудачную попытку подключения
+            ResetConnection();
+
+            // Пытаемся подключиться заново
+            TryConnect();
+        }
+        
+        /// <summary>
+        /// Попытка подключения к службе MTS Service
+        /// </summary>
+        private static void TryConnect()
+        {
+            if (!_connected)
+            {
+                try
+                {
+                    // Пытаемся создать подключение к MTSSercice
+                    _connection = MtsTcpConnection.CreateAsync(_mtsIp, _mtsPort);
+                    _connection.Wait();
+                    _connected = true;
+
+                    // Поключение создано, устанавливаем подписки на изменение значений сигналов
+                    
+                    _cfg = new SubscriptionConfig()
+                        .Identity("Signal-Generator")
+                        .Timeout(TimeSpan.FromMilliseconds(_mtsTimeout));
+                    _subscription = _connection.Result.CreateNewSubscription(_cfg);
+                    _subscription.OnError += OnError;
+                    _subscription.NewData += OnNewData;
+                }
+                catch (Exception e)
+                {
+                    // Если не удалось подключиться
+                    _connected = false;
+                    Console.WriteLine(e.Message);
+                    Logger.Error($"Ошибка при подключении к сервису MTSService: {e.Message}");
+
+                    // Пытаемся переподключиться через указаное в настройках время
+                    TryReconnect();
+                }
+            }
+        }
+
+        /// <summary>
+        /// Сброс неудавшегося поключения
+        /// </summary>
+        private static void ResetConnection()
+        {
+            // Попытка сбросить предыдущее неудачное соединение
+            _connection?.Dispose();
+            if (_subscription == null)
+                return;
+
+            // Удаление предыдущих подписок на сигналы
+            _subscription.OnError -= OnError;
+            _subscription.NewData -= OnNewData;
+        }
+
+        
+        /// <summary>
+        /// Обработка события поступления новых значений сигналов
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private static void OnNewData(object sender, SubscriptionStateEventArgs e)
         {
             SignalsState diff = e.Diff.Signals;
+            _ingots = e.State.Ingots;
+            
+            if(_ingots!=null && _ingots.Any())
+            {
+                // var ingot = _ingots.Select(i => i.ToString());
+                // Console.WriteLine("Ingots:\n" + ingot.Aggregate("", (a, b) => a + "\n" + b));
+                
+                foreach (Ingot item in _ingots)
+                {
+                    // string s = item.Parameters.Values.Select(p => $"[{p.Id}={p.Value}]")
+                    //     .Aggregate("", (a, b) => string.IsNullOrEmpty(a)? b: $"{a}, {b}");
+                    foreach (IngotParam param in item.Parameters.Values)
+                    {
+                        if(param.Id == 1)
+                        {
+                            // Console.WriteLine($"{param.Id} = {param.Value}");
+                            try
+                            {
+                                MaterialsList json =
+                                    JsonConvert.DeserializeObject<MaterialsList>(param.Value.ToString());
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine(ex.Message);
+                            }
+                        }
+                    }
+                }
+            }            
+            
             if (diff != null)
             {
+                Console.WriteLine($"{e.State.TrackTime:O} / {e.State.TimeStamp:O}");
                 foreach (var item in diff)
                 {
                     CheckSignal(item.Key, item.Value);
@@ -111,17 +240,140 @@ namespace SignalGenerator
             }
         }
 
+        /// <summary>
+        /// Обработчик вновь поступившего значения сигнала
+        /// </summary>
+        /// <param name="signal"></param>
+        /// <param name="value"></param>
         private static async void CheckSignal(ushort signal, double value)
         {
-            Console.WriteLine($"[{signal}] = {value}");
+            Console.WriteLine($"[{signal}] = {value:F4}");
             // switch (signal)
             // {
             //     case 4001: break;
             // }
         }
         
-        private static async void StartSimulate()
+        /// <summary>
+        /// Начало симуляции процесса работы тракта сыпучих
+        /// </summary>
+        private static void StartSimulate()
         {
+            Random random = new Random();
+            
+            List<Chemical> chemicals = new List<Chemical>();
+            List<Material> materialList = new List<Material>();
+            MaterialsList materials;
+            Material material;
+            
+            // Материал 1
+            chemicals.Add(new Chemical(1, "Железо", "Fe", 0.75));
+            chemicals.Add(new Chemical(2, "Хром", "Cr", 0.05));
+            chemicals.Add(new Chemical(3, "Ваннадий", "Vn", 0.0015));
+            chemicals.Add(new Chemical(4, "Марганец", "Mn", 0.025));
+            material = new Material(1, "FeSiMn", chemicals);
+            materialList.Add(material);
+            
+            // Материал 2
+            chemicals = new List<Chemical>();
+            chemicals.Add(new Chemical(1, "Кремний", "Si", 25.15));
+            chemicals.Add(new Chemical(2, "Кальций", "Ca", 65.85));
+            material = new Material(2, "SiCa", chemicals);
+            materialList.Add(material);
+            
+            // Материал 3
+            material = new Material(3, "CaO", new List<Chemical>());
+            materialList.Add(material);
+
+            materials = new MaterialsList(materialList);
+
+            ConsoleKeyInfo key;
+            double sig4001;
+            double sig4002;
+            double sig4003;
+            double sig4004;
+            int sig25101 = 1;
+
+            do
+            {
+                key = Console.ReadKey(true);
+                switch (key.KeyChar)
+                {
+                    case 'g':
+                    case 'G':
+                        sig4001 = random.NextDouble() * 100;
+                        sig4002 = random.NextDouble() * 100;
+                        sig4003 = random.NextDouble() * 100;
+                        sig4004 = random.NextDouble() * 100;
+                        sig25101 = sig25101 == 1 ? 0 : 1;
+                        _subscription.SetSignal(4303, sig25101);
+                        // _subscription.CreateBatch()
+                        //     .SetSignal(4001, sig4001)
+                        //     .SetSignal(4002, sig4002)
+                        //     .SetSignal(4003, sig4003)
+                        //     .SetSignal(4004, sig4004)
+                        //     .Execute().Wait();
+                        break;
+                    case 'r':
+                    case 'R':
+                        _subscription.AddAoI(minX: 0, maxX: 100, thread: 5).Wait();
+                        break;
+                    case 'a':
+                    case 'A':
+                        _subscription.AddIngot(36, 38, 0, 0.5, 5, level3Id: 0, baseId: 0, rollingId: 0)
+                            .Wait();
+                        break;
+                    case 'd':
+                    case 'D':
+                        if (_ingots != null && _ingots.Any())
+                        {
+                            _subscription.DeleteIngot(_ingots.First().Id).Wait();
+                        }
+
+                        break;
+                    case 'p':
+                    case 'P':
+                        if (_ingots != null && _ingots.Any())
+                        {
+                            string param = JsonConvert.SerializeObject(materials, Formatting.None);
+                            _subscription.ModifyIngot(_ingots.First().Id, parameters: new[]
+                            {
+                                new ValueTuple<ushort, object>(1, param)
+                            });
+                        }
+
+                        break;
+                    case 'm':
+                    case 'M':
+                        // Ручное управление сигналами
+                        ushort num = 0;
+                        double val = 0;
+                        Console.Write("Номер сигнала: ");
+                        string sigNum = Console.ReadLine();
+                        Console.Write("Значение: ");
+                        string sigVal = Console.ReadLine();
+                        if (sigNum.Trim() != "" && sigVal.Trim() != "")
+                        {
+                            try
+                            {
+                                num = ushort.Parse(sigNum);
+                                val = double.Parse(sigVal);
+                            }
+                            catch
+                            {
+                                num = 0;
+                                val = 0;
+                            }
+                        }
+
+                        if (val > 0 && num > 0)
+                        {
+                            _subscription.SetSignal(num, val).Wait();
+                        }
+                        break;
+                }
+            } while (key.KeyChar != 'x');
+            
             // Начало симуляции сигналов
             // Сигнал 1 - Загрузка материала в первый загрузочный бункер
             
