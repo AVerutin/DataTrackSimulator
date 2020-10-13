@@ -6,7 +6,7 @@
 
 using ConfigReader;
 
-namespace MtsDb.Config
+namespace SignalGenerator.Config
 {
   [Section(new string[] {"ОбщиеПараметрыСтана", "CommonParameters"})]
   internal class RollingMillParams

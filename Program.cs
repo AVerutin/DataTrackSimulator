@@ -6,7 +6,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using ConfigReader;
 using MtsConnect;
-using MtsDb.Config;
+using SignalGenerator.Config;
 using NLog;
 using SignalGenerator.Data;
 
