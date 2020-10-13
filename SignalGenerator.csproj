@@ -6,6 +6,9 @@
     </PropertyGroup>
 
     <ItemGroup>
+      <Reference Include="ConfigReader, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null">
+        <HintPath>..\libs\ConfigReader.dll</HintPath>
+      </Reference>
       <Reference Include="MtsConnect, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null">
         <HintPath>data\MtsConnect.dll</HintPath>
       </Reference>

@@ -4,7 +4,9 @@ using Microsoft.Extensions.Configuration;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using ConfigReader;
 using MtsConnect;
+using MtsDb.Config;
 using NLog;
 using SignalGenerator.Data;
 
@@ -12,6 +14,10 @@ namespace SignalGenerator
 {
     class Program
     {
+        private static Reader _reader;
+        private static string _cfgMill;
+        private static List<string> _objectsJson;
+        
         private static IConfigurationRoot _config;
         private static SubscriptionConfig _cfg;
         private static Task<MtsTcpConnection> _connection;
@@ -43,6 +49,7 @@ namespace SignalGenerator
         private static void ConnectToMts()
         {
             List<ushort> signals = AddMtsSignals();
+            _objectsJson = new List<string>();
             
             _config = new ConfigurationBuilder()
                 .AddJsonFile("appsettings.json")
@@ -51,6 +58,30 @@ namespace SignalGenerator
             _mtsPort = Int32.Parse(_config.GetSection("Mts:Port").Value);
             _mtsTimeout = Int32.Parse(_config.GetSection("Mts:Timeout").Value);
             _mtsReconnect = Int32.Parse(_config.GetSection("Mts:ReconnectTimeout").Value);
+            _cfgMill = _config.GetSection("RollingMillConfigPath").Value;
+            
+            // _reader = new Reader(_cfgMill);
+            _reader = new Reader(_mtsIp, _mtsPort);
+            try
+            {
+                _reader.ReadAsync().Wait();
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Ошибка чтения конфигурационного файла [{ex.Message}]");
+                Console.WriteLine($"Ошибка чтения конфигурационного файла [{ex.Message}]");
+            }
+
+            if (_reader.GetObjects<Tu>().Any<Tu>((Func<Tu, bool>) (tu => tu.Aggregate == null)))
+            {
+                LogManager.GetCurrentClassLogger().Error("Не для всех ТУ задан Агрегат.");
+                throw new Exception("Не для всех ТУ задан Агрегат.");
+            }
+            
+            foreach (var obj in _reader.Objects)
+            {
+                _objectsJson.Add(JsonConvert.SerializeObject(obj));
+            }
 
             TryConnect();
             
@@ -204,8 +235,8 @@ namespace SignalGenerator
             
             if(_ingots!=null && _ingots.Any())
             {
-                // var ingot = _ingots.Select(i => i.ToString());
-                // Console.WriteLine("Ingots:\n" + ingot.Aggregate("", (a, b) => a + "\n" + b));
+                var ingot = _ingots.Select(i => i.ToString());
+                Console.WriteLine("Ingots:\n" + ingot.Aggregate("", (a, b) => a + "\n" + b));
                 
                 foreach (Ingot item in _ingots)
                 {
@@ -316,7 +347,21 @@ namespace SignalGenerator
                         break;
                     case 'r':
                     case 'R':
-                        _subscription.AddAoI(minX: 0, maxX: 100, thread: 5).Wait();
+                        Console.Write("Номер нити: ");
+                        string threadStr = Console.ReadLine();
+                        ushort threadNum = 0;
+                        if (threadStr.Trim() != "")
+                        {
+                            try
+                            {
+                                threadNum = ushort.Parse(threadStr);
+                            }
+                            catch
+                            {
+                                threadNum = 0;
+                            }
+                        }
+                        _subscription.AddAoI(minX: 0, maxX: 100, thread: threadNum).Wait();
                         break;
                     case 'a':
                     case 'A':

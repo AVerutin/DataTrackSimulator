@@ -7,6 +7,15 @@
       <e p=".gitignore" t="Include" />
       <e p="appsettings.json" t="Include" />
       <e p="bin" t="ExcludeRecursive" />
+      <e p="Config" t="Include">
+        <e p="Aggregate.cs" t="Include" />
+        <e p="Connection.cs" t="Include" />
+        <e p="RollingMillParams.cs" t="Include" />
+        <e p="Signal.cs" t="Include" />
+        <e p="Subscriptions.cs" t="Include" />
+        <e p="TcpServer.cs" t="Include" />
+        <e p="Tu.cs" t="Include" />
+      </e>
       <e p="data" t="Include">
         <e p="Chemical.cs" t="Include" />
         <e p="Material.cs" t="Include" />
